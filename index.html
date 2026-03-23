@@ -382,11 +382,7 @@
             return;
         }
         
-        const hasIndex = selectedFiles.some(f => f.name.toLowerCase() === 'index.html');
-        if (!hasIndex) {
-            showResult('⚠️ الموقع يجب أن يحتوي على ملف index.html', 'error');
-            return;
-        }
+        
         
         const siteId = Date.now().toString();
         
