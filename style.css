@@ -1,0 +1,180 @@
+// تحميل المواقع المحفوظة
+let userSites = [];
+
+function loadSites() {
+    const stored = localStorage.getItem('publishedSites');
+    if (stored) {
+        userSites = JSON.parse(stored);
+        displaySites();
+    }
+}
+
+function saveSites() {
+    localStorage.setItem('publishedSites', JSON.stringify(userSites));
+    displaySites();
+}
+
+function displaySites() {
+    const container = document.getElementById('mySitesList');
+    if (!container) return;
+    
+    if (userSites.length === 0) {
+        container.innerHTML = '<div class="empty-sites">📭 لم تنشر أي موقع بعد</div>';
+        return;
+    }
+    
+    container.innerHTML = userSites.map(site => `
+        <div class="site-card">
+            <div>
+                <div class="site-name">${escapeHtml(site.name)}</div>
+                <a href="${site.url}" target="_blank" class="site-link">${site.url}</a>
+            </div>
+            <button class="delete-btn" onclick="deleteSite('${site.id}')">🗑️ حذف</button>
+        </div>
+    `).join('');
+}
+
+function deleteSite(id) {
+    if (confirm('هل أنت متأكد من حذف هذا الموقع؟')) {
+        userSites = userSites.filter(site => site.id !== id);
+        saveSites();
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// عرض الملفات المختارة
+function updateFileList(files) {
+    const fileListDiv = document.getElementById('fileList');
+    if (!fileListDiv) return;
+    
+    if (files.length === 0) {
+        fileListDiv.innerHTML = '';
+        return;
+    }
+    
+    let html = '';
+    for (let i = 0; i < Math.min(files.length, 20); i++) {
+        html += `<div class="file-item">📄 ${escapeHtml(files[i].name)}</div>`;
+    }
+    if (files.length > 20) {
+        html += `<div class="file-item">... و ${files.length - 20} ملف آخر</div>`;
+    }
+    fileListDiv.innerHTML = html;
+}
+
+// حفظ الملفات في IndexedDB مؤقتاً
+let selectedFiles = [];
+
+function handleFileSelect(event) {
+    const files = Array.from(event.target.files);
+    selectedFiles = files;
+    updateFileList(files);
+}
+
+// نشر الموقع
+async function publishSite() {
+    const siteName = document.getElementById('siteName')?.value.trim();
+    const uploadBtn = document.getElementById('uploadBtn');
+    const progressBar = document.getElementById('progressBar');
+    const progressFill = document.getElementById('progressFill');
+    const resultDiv = document.getElementById('result');
+    
+    if (!siteName) {
+        showResult('❌ من فضلك أدخل اسم الموقع', 'error');
+        return;
+    }
+    
+    if (selectedFiles.length === 0) {
+        showResult('❌ من فضلك اختر ملفات الموقع', 'error');
+        return;
+    }
+    
+    // التحقق من وجود ملف index.html
+    const hasIndex = selectedFiles.some(f => f.name.toLowerCase() === 'index.html');
+    if (!hasIndex) {
+        showResult('⚠️ الموقع يجب أن يحتوي على ملف index.html', 'error');
+        return;
+    }
+    
+    // إنشاء معرف فريد للموقع
+    const siteId = siteName.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
+    const siteUrl = `https://${siteId}.netlify.app`;
+    
+    // إظهار شريط التقدم
+    uploadBtn.disabled = true;
+    progressBar.style.display = 'block';
+    progressFill.style.width = '30%';
+    progressFill.textContent = 'جاري التجهيز...';
+    
+    try {
+        // محاكاة رفع الملفات (هنا هنتصل بـ Netlify API بعدين)
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        
+        progressFill.style.width = '70%';
+        progressFill.textContent = 'جاري النشر...';
+        
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        
+        progressFill.style.width = '100%';
+        progressFill.textContent = 'تم النشر!';
+        
+        // حفظ الموقع في القائمة
+        const newSite = {
+            id: siteId,
+            name: siteName,
+            url: siteUrl,
+            date: new Date().toISOString()
+        };
+        
+        userSites.unshift(newSite);
+        saveSites();
+        
+        showResult(`✅ تم نشر موقعك بنجاح!<br><br>🔗 رابط موقعك: <a href="${siteUrl}" target="_blank">${siteUrl}</a><br><br>⚠️ ملاحظة: هذا إصدار تجريبي، قريباً سنضيف رفع الملفات الحقيقي`, 'success');
+        
+        // تنظيف
+        document.getElementById('siteName').value = '';
+        document.getElementById('fileInput').value = '';
+        selectedFiles = [];
+        updateFileList([]);
+        
+    } catch (error) {
+        showResult('❌ حدث خطأ أثناء النشر. حاول مرة أخرى', 'error');
+    } finally {
+        uploadBtn.disabled = false;
+        setTimeout(() => {
+            progressBar.style.display = 'none';
+            progressFill.style.width = '0%';
+        }, 2000);
+    }
+}
+
+function showResult(message, type) {
+    const resultDiv = document.getElementById('result');
+    resultDiv.innerHTML = message;
+    resultDiv.className = `result ${type}`;
+    setTimeout(() => {
+        resultDiv.className = 'result';
+        resultDiv.innerHTML = '';
+    }, 8000);
+}
+
+// تشغيل الكود بعد تحميل الصفحة
+document.addEventListener('DOMContentLoaded', () => {
+    loadSites();
+    
+    const fileInput = document.getElementById('fileInput');
+    const uploadBtn = document.getElementById('uploadBtn');
+    
+    if (fileInput) {
+        fileInput.addEventListener('change', handleFileSelect);
+    }
+    
+    if (uploadBtn) {
+        uploadBtn.addEventListener('click', publishSite);
+    }
+});
