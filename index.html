@@ -283,23 +283,181 @@
 </div>
 <!-- ========== الجزء الثالث: JavaScript ========== -->
 <script>
-    // تخزين المواقع
-    let userSites = [];
+    // ========== التخزين الجديد باستخدام IndexedDB ==========
+let db = null;
+let userSites = [];
 
-    // تحميل المواقع المحفوظة
-    function loadSites() {
-        const stored = localStorage.getItem('publishedSites');
-        if (stored) {
-            userSites = JSON.parse(stored);
-            displaySites();
+// فتح قاعدة البيانات
+function openDB() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open('SitesDB', 1);
+        
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+            db = request.result;
+            resolve(db);
+        };
+        
+        request.onupgradeneeded = (event) => {
+            const db = event.target.result;
+            // تخزين المواقع
+            if (!db.objectStoreNames.contains('sites')) {
+                db.createObjectStore('sites', { keyPath: 'id' });
+            }
+            // تخزين الملفات
+            if (!db.objectStoreNames.contains('files')) {
+                db.createObjectStore('files', { keyPath: 'siteId' });
+            }
+        };
+    });
+}
+
+// تحميل المواقع من IndexedDB
+async function loadSites() {
+    await openDB();
+    const transaction = db.transaction(['sites'], 'readonly');
+    const store = transaction.objectStore('sites');
+    const request = store.getAll();
+    
+    request.onsuccess = () => {
+        userSites = request.result || [];
+        displaySites();
+    };
+}
+
+// حفظ الموقع مع ملفاته
+async function saveSiteWithFiles(site, filesMap) {
+    // حفظ بيانات الموقع
+    const tx1 = db.transaction(['sites'], 'readwrite');
+    const sitesStore = tx1.objectStore('sites');
+    sitesStore.put(site);
+    
+    // حفظ الملفات
+    const tx2 = db.transaction(['files'], 'readwrite');
+    const filesStore = tx2.objectStore('files');
+    
+    // تحويل الملفات إلى صيغة قابلة للتخزين
+    const filesData = [];
+    for (const [path, file] of filesMap) {
+        const content = await readFileAsDataURL(file);
+        filesData.push({ path, content, type: file.type, name: file.name });
+    }
+    
+    filesStore.put({ siteId: site.id, files: filesData });
+    
+    return new Promise((resolve) => {
+        tx2.oncomplete = () => resolve();
+    });
+}
+
+// استرجاع ملفات موقع
+async function getSiteFiles(siteId) {
+    const transaction = db.transaction(['files'], 'readonly');
+    const store = transaction.objectStore('files');
+    const request = store.get(siteId);
+    
+    return new Promise((resolve) => {
+        request.onsuccess = () => {
+            resolve(request.result ? request.result.files : []);
+        };
+    });
+}
+
+// حذف موقع
+async function deleteSitePermanent(id) {
+    if (confirm('هل أنت متأكد من حذف هذا الموقع؟')) {
+        // حذف من مواقع
+        const tx1 = db.transaction(['sites'], 'readwrite');
+        tx1.objectStore('sites').delete(id);
+        
+        // حذف الملفات
+        const tx2 = db.transaction(['files'], 'readwrite');
+        tx2.objectStore('files').delete(id);
+        
+        userSites = userSites.filter(site => site.id !== id);
+        displaySites();
+        showResult('✅ تم حذف الموقع بنجاح', 'success');
+    }
+}
+
+// عرض المواقع (نفس الكود القديم لكن deleteSite يروح للجديد)
+function displaySites() {
+    const container = document.getElementById('mySitesList');
+    if (!container) return;
+    
+    if (userSites.length === 0) {
+        container.innerHTML = '<div class="empty-sites">📭 لم تنشر أي موقع بعد</div>';
+        return;
+    }
+    
+    container.innerHTML = userSites.map(site => `
+        <div class="site-card">
+            <div class="site-info">
+                <div class="site-name">${escapeHtml(site.name)}</div>
+                <a href="#" onclick="viewSite('${site.id}'); return false;" class="site-link">عرض الموقع</a>
+                <div style="font-size:12px; color:#999; margin-top:5px;">${new Date(site.date).toLocaleString('ar')}</div>
+            </div>
+            <button class="delete-btn" onclick="deleteSitePermanent('${site.id}')">🗑️ حذف</button>
+        </div>
+    `).join('');
+}
+
+// عرض موقع من التخزين
+async function viewSite(siteId) {
+    const site = userSites.find(s => s.id === siteId);
+    if (!site) return;
+    
+    const files = await getSiteFiles(siteId);
+    if (!files.length) return;
+    
+    // إعادة بناء الملفات
+    const filesMap = new Map();
+    for (const fileData of files) {
+        const blob = dataURLtoBlob(fileData.content);
+        const file = new File([blob], fileData.name, { type: fileData.type });
+        filesMap.set(fileData.path, file);
+    }
+    
+    // البحث عن ملف HTML الرئيسي
+    let mainFile = null;
+    for (const [path, file] of filesMap) {
+        if (file.name.toLowerCase() === 'index.html') {
+            mainFile = file;
+            break;
         }
     }
-
-    // حفظ المواقع
-    function saveSites() {
-        localStorage.setItem('publishedSites', JSON.stringify(userSites));
-        displaySites();
+    if (!mainFile) {
+        for (const [path, file] of filesMap) {
+            if (file.name.endsWith('.html')) {
+                mainFile = file;
+                break;
+            }
+        }
     }
+    
+    if (mainFile) {
+        const content = await readFileAsText(mainFile);
+        const viewerHtml = await generateSiteViewer(filesMap, content, site.name);
+        const blob = new Blob([viewerHtml], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+    }
+}
+
+// تحويل DataURL إلى Blob
+function dataURLtoBlob(dataURL) {
+    const arr = dataURL.split(',');
+    const mime = arr[0].match(/:(.*?);/)[1];
+    const bstr = atob(arr[1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while (n--) {
+        u8arr[n] = bstr.charCodeAt(n);
+    }
+    return new Blob([u8arr], { type: mime });
+}
+
+    
 
     // عرض المواقع
     function displaySites() {
@@ -323,13 +481,7 @@
         `).join('');
     }
 
-    // حذف موقع
-    function deleteSite(id) {
-        if (confirm('هل أنت متأكد من حذف هذا الموقع؟')) {
-            userSites = userSites.filter(site => site.id !== id);
-            saveSites();
-        }
-    }
+    
 
     // تنصيب النصوص
     function escapeHtml(text) {
@@ -368,72 +520,88 @@
         fileListDiv.style.display = 'block';
     }
 
-    // نشر الموقع
-    async function publishSite() {
-        const siteName = document.getElementById('siteName').value.trim();
-        const uploadBtn = document.getElementById('uploadBtn');
-        const progressBar = document.getElementById('progressBar');
-        const progressFill = document.getElementById('progressFill');
-        
-        const siteId = Date.now().toString();
-        
-        uploadBtn.disabled = true;
-        progressBar.style.display = 'block';
-        progressFill.style.width = '20%';
-        progressFill.textContent = 'جاري تجهيز الملفات...';
-        
-        try {
-            const filesMap = new Map();
-            for (const file of selectedFiles) {
-                let path = file.webkitRelativePath || file.name;
-                if (path.includes('/')) {
-                    path = path.split('/').slice(1).join('/');
-                }
-                filesMap.set(path, file);
-            }
-            
-            progressFill.style.width = '50%';
-            progressFill.textContent = 'جاري إنشاء الرابط...';
-            
-            const siteUrl = await createSitePreview(filesMap, siteName);
-            
-            progressFill.style.width = '100%';
-            progressFill.textContent = 'تم النشر!';
-            
-            const newSite = {
-                id: siteId,
-                name: siteName,
-                url: siteUrl,
-                date: new Date().toISOString(),
-                files: selectedFiles.map(f => f.name)
-            };
-            
-            userSites.unshift(newSite);
-            saveSites();
-            
-            showResult(`
-                ✅ تم نشر موقع "${escapeHtml(siteName)}" بنجاح!<br><br>
-                🔗 رابط موقعك: <a href="${siteUrl}" target="_blank">${siteUrl}</a><br><br>
-                💡 يمكنك نسخ هذا الرابط ومشاركته مع أي شخص
-            `, 'success');
-            
-            document.getElementById('siteName').value = '';
-            document.getElementById('fileInput').value = '';
-            selectedFiles = [];
-            document.getElementById('fileList').style.display = 'none';
-            document.getElementById('fileList').innerHTML = '';
-            
-        } catch (error) {
-            console.error(error);
-            showResult('❌ حدث خطأ: ' + error.message, 'error');
-        } finally {
-            uploadBtn.disabled = false;
-            setTimeout(() => {
-                progressBar.style.display = 'none';
-                progressFill.style.width = '0%';
-            }, 2000);
-        }
+    //// نشر الموقع (يحفظ في IndexedDB)
+async function publishSite() {
+    const siteName = document.getElementById('siteName').value.trim();
+    const uploadBtn = document.getElementById('uploadBtn');
+    const progressBar = document.getElementById('progressBar');
+    const progressFill = document.getElementById('progressFill');
+    
+    if (!siteName) {
+        showResult('❌ من فضلك أدخل اسم الموقع', 'error');
+        return;
     }
+    
+    if (selectedFiles.length === 0) {
+        showResult('❌ من فضلك اختر ملفات الموقع', 'error');
+        return;
+    }
+    
+    const htmlFiles = selectedFiles.filter(f => f.name.endsWith('.html') || f.name.endsWith('.htm'));
+    if (htmlFiles.length === 0) {
+        showResult('⚠️ الموقع يجب أن يحتوي على ملف HTML واحد على الأقل', 'error');
+        return;
+    }
+    
+    const siteId = Date.now().toString();
+    
+    uploadBtn.disabled = true;
+    progressBar.style.display = 'block';
+    progressFill.style.width = '20%';
+    progressFill.textContent = 'جاري تجهيز الملفات...';
+    
+    try {
+        const filesMap = new Map();
+        for (const file of selectedFiles) {
+            let path = file.webkitRelativePath || file.name;
+            if (path.includes('/')) {
+                path = path.split('/').slice(1).join('/');
+            }
+            filesMap.set(path, file);
+        }
+        
+        progressFill.style.width = '50%';
+        progressFill.textContent = 'جاري حفظ الملفات...';
+        
+        const newSite = {
+            id: siteId,
+            name: siteName,
+            date: new Date().toISOString(),
+            mainFile: htmlFiles[0].name
+        };
+        
+        // حفظ في IndexedDB
+        await saveSiteWithFiles(newSite, filesMap);
+        userSites.unshift(newSite);
+        displaySites();
+        
+        progressFill.style.width = '100%';
+        progressFill.textContent = 'تم النشر!';
+        
+        showResult(`
+            ✅ تم نشر موقع "${escapeHtml(siteName)}" بنجاح!<br><br>
+            📄 الصفحة الرئيسية: ${escapeHtml(htmlFiles[0].name)}<br>
+            💡 الموقع محفوظ بشكل دائم، يمكنك فتحه حتى بعد قفل المتصفح<br>
+            🔗 اضغط على "عرض الموقع" في القائمة لمشاهدته
+        `, 'success');
+        
+        document.getElementById('siteName').value = '';
+        document.getElementById('fileInput').value = '';
+        selectedFiles = [];
+        document.getElementById('fileList').style.display = 'none';
+        document.getElementById('fileList').innerHTML = '';
+        
+    } catch (error) {
+        console.error(error);
+        showResult('❌ حدث خطأ: ' + error.message, 'error');
+    } finally {
+        uploadBtn.disabled = false;
+        setTimeout(() => {
+            progressBar.style.display = 'none';
+            progressFill.style.width = '0%';
+        }, 2000);
+    }
+}
 
     // إنشاء معاينة للموقع
     async function createSitePreview(filesMap, siteName) {
